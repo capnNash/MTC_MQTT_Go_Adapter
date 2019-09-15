@@ -1,0 +1,94 @@
+# Golang CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-go/ for more details
+version: 2.1
+
+orbs:
+  aws-cli: circleci/aws-cli@0.1.13
+  aws-s3: circleci/aws-s3@1.0.11
+
+jobs:
+  build:   
+    docker:
+      - image: circleci/golang:1.9
+    working_directory: ~/mqtt-adapter
+    
+    steps:
+      - attach_workspace:
+          at: ~/mqtt-adapter
+      
+      - checkout
+      - run:
+          name: Install MQTT Adapter dependencies
+          command: |
+            go get github.com/clearblade/Go-SDK
+            go get github.com/clearblade/mqtt_parsing 
+            go get github.com/clearblade/paho.mqtt.golang     
+      - run:
+          name: Generate the netvox-adapter Binary
+          command: |
+            cd netvox-adapter
+            GOARCH=arm GOARM=5 GOOS=linux go build -o netvoxMqttBridgeAdapter
+      - run:
+          name: Generate the ellenex-adapter Binary
+          command: |
+            cd ellenex-adapter
+            GOARCH=arm GOARM=5 GOOS=linux go build -o ellenexMqttBridgeAdapter
+      - persist_to_workspace:
+          root: .
+          paths: .
+
+
+  deploy:
+    machine:
+        enabled: true
+    working_directory: ~/mqtt-adapter
+    steps:
+      - attach_workspace:
+          at: ~/mqtt-adapter
+
+      - persist_to_workspace:
+          root: .
+          paths: .
+
+      - checkout
+
+      - run:
+          name: Deploy to S3 bucket
+          command: ls
+
+      - aws-s3/sync:
+          from: .
+          to: $MULTITECH_ADAPTER_S3_BUCKET
+          aws-access-key-id: AWS_ACCESS_KEY
+          aws-secret-access-key: AWS_SECRET_KEY
+          overwrite: true
+          aws-region: AWS_DEFAULT_REGION
+
+      - run:
+          name: Chat Notification Fail
+          when: on_fail
+          command: >
+            curl --header "Content-Type: application/json"
+            --request POST
+            --data "{\"cards\":[{\"header\":{\"title\":\"Oops. Build ${CIRCLE_BUILD_NUM} failed, and deployment did not update.\",\"subtitle\":\"${CIRCLE_PROJECT_REPONAME}\",\"imageUrl\":\"https://png.pngtree.com/svg/20170406/icon_failed__1325447.png\",\"imageStyle\":\"IMAGE\"},\"sections\":[{\"widgets\":[{\"keyValue\":{\"topLabel\":\"${CIRCLE_TAG}\",\"content\":\"${CIRCLE_SHA1}\"}}]},{\"widgets\":[{\"buttons\":[{\"textButton\":{\"text\":\"DETAILS\",\"onClick\":{\"openLink\":{\"url\":\"${CIRCLE_BUILD_URL}\"}}}}]}]}]}]}"
+            $CHAT_WEBHOOK_URL
+      - run:
+          name: Chat Notification Success
+          when: on_success
+          command: >
+            curl --header "Content-Type: application/json"
+            --request POST
+            --data "{\"cards\":[{\"header\":{\"title\":\"Build ${CIRCLE_BUILD_NUM} passed and deployed.\",\"subtitle\":\"${CIRCLE_PROJECT_REPONAME}\",\"imageUrl\":\"https://png.pngtree.com/svg/20170510/success_404253.png\",\"imageStyle\":\"IMAGE\"},\"sections\":[{\"widgets\":[{\"keyValue\":{\"topLabel\":\"${CIRCLE_TAG}\",\"content\":\"${CIRCLE_SHA1}\"}}]},{\"widgets\":[{\"buttons\":[{\"textButton\":{\"text\":\"DETAILS\",\"onClick\":{\"openLink\":{\"url\":\"${CIRCLE_BUILD_URL}\"}}}}]}]}]}]}"
+            $CHAT_WEBHOOK_URL
+
+workflows:
+  version: 2
+  build_and_deploy:
+    jobs:
+      - build
+      - deploy:
+          context: IoTRightDemo
+          requires:
+            - build
+           
